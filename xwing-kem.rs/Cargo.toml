@@ -1,0 +1,25 @@
+[package]
+name = "xwing-kem"
+version = "0.1.0"
+edition = "2021"
+readme = "README.md"
+license = "BSD-3-Clause"
+description = "Xwing hybrid combiner KEM utilizing MLKEM/Kyber and X25519. See https://eprint.iacr.org/2024/039."
+homepage = "https://github.com/rugo/xwing-kem.rs"
+documentation = "https://github.com/rugo/xwing-kem.rs"
+repository = "https://github.com/rugo/xwing-kem.rs"
+keywords = ["cryptography", "kyber", "post-quantum", "hybrid", "curve25519"]
+categories = ["cryptography", "post-quantum"]
+authors = [
+    "Ruben Gonzalez <mail@ruben-gonzalez.de>",
+]
+
+[dependencies]
+pqcrypto-kyber = "0.8.0"
+pqcrypto-traits = "0.3.5"
+x25519-dalek =  { version = "2", features = ["getrandom", "static_secrets"] }
+sha3 = "0.10.8"
+arrayref = "0.3"
+
+[dev-dependencies]
+hex = "0.4.3"
