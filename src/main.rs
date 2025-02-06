@@ -1,55 +1,106 @@
-use age_core::format::{FileKey, Stanza};
-use age_core::primitives::{aead_decrypt, aead_encrypt};
-use age_core::secrecy::ExposeSecret;
+use age_core::{
+    format::{FileKey, Stanza, FILE_KEY_BYTES},
+    primitives::{aead_decrypt, aead_encrypt},
+    secrecy::ExposeSecret,
+};
 use age_plugin::{
     identity::{self, IdentityPluginV1},
+    print_new_identity,
     recipient::{self, RecipientPluginV1},
-    run_state_machine, Callbacks,
+    run_state_machine, Callbacks, PluginHandler,
 };
 use base64::prelude::*;
-use bech32::ToBase32;
 use clap::Parser;
-use xwing_kem::{XwingCiphertext, XwingPublicKey, XwingSecretKey};
+use kem::{Decapsulate, Encapsulate};
+use rand_core::OsRng;
+use std::{
+    array::TryFromSliceError,
+    collections::{HashMap, HashSet},
+    io,
+};
+use x_wing::{
+    Ciphertext, DecapsulationKey, EncapsulationKey, DECAPSULATION_KEY_SIZE, ENCAPSULATION_KEY_SIZE,
+};
 
-use std::collections::HashMap;
-use std::io;
+const PLUGIN_NAME: &str = "xwing";
 
-const RECIPIENT_PREFIX: &str = "age1xwing";
-const IDENTITY_PREFIX: &str = "AGE-PLUGIN-XWING-";
-const STANZA_TAG: &str = "xwing";
+struct Handler;
+
+impl PluginHandler for Handler {
+    type RecipientV1 = RecipientPlugin;
+    type IdentityV1 = IdentityPlugin;
+
+    fn recipient_v1(self) -> io::Result<Self::RecipientV1> {
+        Ok(RecipientPlugin::default())
+    }
+
+    fn identity_v1(self) -> io::Result<Self::IdentityV1> {
+        Ok(IdentityPlugin::default())
+    }
+}
 
 #[derive(Default)]
 struct RecipientPlugin {
-    recipients: Vec<XwingPublicKey>,
+    recipients: Vec<EncapsulationKey>,
 }
 
 impl RecipientPluginV1 for RecipientPlugin {
     fn add_recipient(
         &mut self,
         index: usize,
-        _plugin_name: &str,
+        plugin_name: &str,
         bytes: &[u8],
     ) -> Result<(), recipient::Error> {
-        let bytes = match bytes.try_into() {
-            Ok(x) => x,
-            _ => {
+        if plugin_name != PLUGIN_NAME {
+            return Err(recipient::Error::Recipient {
+                index,
+                message: "This recipient should not be handeled by this plugin".to_string(),
+            });
+        }
+
+        let pk: Result<&[u8; ENCAPSULATION_KEY_SIZE], TryFromSliceError> = bytes.try_into();
+        let pk = match pk {
+            Ok(x) => EncapsulationKey::from(x),
+            Err(_) => {
                 return Err(recipient::Error::Recipient {
                     index,
-                    message: "Invalid recipient".to_owned(),
+                    message: "Invalid recipient".to_string(),
                 })
             }
         };
-        self.recipients.push(XwingPublicKey::from(bytes));
+
+        self.recipients.push(pk);
+
         Ok(())
     }
 
     fn add_identity(
         &mut self,
-        _index: usize,
-        _plugin_name: &str,
-        _bytes: &[u8],
+        index: usize,
+        plugin_name: &str,
+        bytes: &[u8],
     ) -> Result<(), recipient::Error> {
-        unimplemented!()
+        if plugin_name != PLUGIN_NAME {
+            return Err(recipient::Error::Identity {
+                index,
+                message: "This Identity should not be handeled by this plugin".to_owned(),
+            });
+        }
+
+        let sk: Result<&[u8; DECAPSULATION_KEY_SIZE], TryFromSliceError> = bytes.try_into();
+        let sk = match sk {
+            Ok(x) => DecapsulationKey::from(x.to_owned()),
+            Err(_) => {
+                return Err(recipient::Error::Identity {
+                    index,
+                    message: "Invalid identity".to_string(),
+                })
+            }
+        };
+
+        self.recipients.push(sk.encapsulation_key());
+
+        Ok(())
     }
 
     fn wrap_file_keys(
@@ -63,11 +114,11 @@ impl RecipientPluginV1 for RecipientPlugin {
                 self.recipients
                     .iter()
                     .map(|recipient| {
-                        let (ss, ct) = recipient.encapsulate();
-                        let wrapped_key = aead_encrypt(&ss.to_bytes(), file_key.expose_secret());
+                        let (ct, ss) = recipient.encapsulate(&mut OsRng).unwrap();
+                        let wrapped_key = aead_encrypt(&ss, file_key.expose_secret());
                         Stanza {
-                            tag: STANZA_TAG.to_string(),
-                            args: vec![BASE64_STANDARD.encode(ct.to_bytes())],
+                            tag: PLUGIN_NAME.to_string(),
+                            args: vec![BASE64_STANDARD.encode(ct.as_bytes())],
                             body: wrapped_key,
                         }
                     })
@@ -75,30 +126,43 @@ impl RecipientPluginV1 for RecipientPlugin {
             })
             .collect()))
     }
+
+    fn labels(&mut self) -> std::collections::HashSet<String> {
+        HashSet::default()
+    }
 }
 
 #[derive(Default)]
 struct IdentityPlugin {
-    identities: Vec<XwingSecretKey>,
+    identities: Vec<DecapsulationKey>,
 }
 
 impl IdentityPluginV1 for IdentityPlugin {
     fn add_identity(
         &mut self,
         index: usize,
-        _plugin_name: &str,
+        plugin_name: &str,
         bytes: &[u8],
     ) -> Result<(), identity::Error> {
-        let bytes = match bytes.try_into() {
+        if plugin_name != PLUGIN_NAME {
+            return Err(identity::Error::Identity {
+                index,
+                message: "This Identity should not be handeled by this plugin".to_string(),
+            });
+        }
+
+        let bytes: [u8; DECAPSULATION_KEY_SIZE] = match bytes.try_into() {
             Ok(x) => x,
             _ => {
                 return Err(identity::Error::Identity {
                     index,
-                    message: "Invalid identity".to_owned(),
+                    message: "Invalid identity".to_string(),
                 })
             }
         };
-        self.identities.push(XwingSecretKey::from(bytes));
+
+        self.identities.push(DecapsulationKey::from(bytes));
+
         Ok(())
     }
 
@@ -109,7 +173,7 @@ impl IdentityPluginV1 for IdentityPlugin {
     ) -> io::Result<HashMap<usize, Result<FileKey, Vec<identity::Error>>>> {
         Ok(files
             .into_iter()
-            .map(|file| try_decrypt_file(&self.identities, file))
+            .map(|file| try_decrypt_file_key(&self.identities, file))
             .enumerate()
             .map(|(file_index, file_key)| {
                 file_key.ok_or(vec![identity::Error::Stanza {
@@ -123,29 +187,23 @@ impl IdentityPluginV1 for IdentityPlugin {
     }
 }
 
-fn try_decrypt_file(keys: &Vec<XwingSecretKey>, stanzas: Vec<Stanza>) -> Option<FileKey> {
+fn try_decrypt_file_key(keys: &Vec<DecapsulationKey>, stanzas: Vec<Stanza>) -> Option<FileKey> {
     stanzas
         .iter()
-        .map(|stanza| try_decrypt(keys, stanza))
-        .filter(|file_key| file_key.is_some())
-        .map(|file_key| file_key.expect("This should never fail"))
+        .filter_map(|stanza| try_decrypt_stanza(keys, stanza))
         .next()
 }
 
-fn try_decrypt(keys: &Vec<XwingSecretKey>, stanza: &Stanza) -> Option<FileKey> {
-    let ct = BASE64_STANDARD
-        .decode(&stanza.args.get(0).unwrap_or(&"".to_string()))
-        .ok()?;
-    let ct: [u8; 1120] = ct.try_into().ok()?;
-    let ct = XwingCiphertext::from(ct);
+fn try_decrypt_stanza(keys: &Vec<DecapsulationKey>, stanza: &Stanza) -> Option<FileKey> {
+    let ct = BASE64_STANDARD.decode(stanza.args.first()?).ok()?;
+    let ct = Ciphertext::from(&ct.try_into().ok()?);
 
     for key in keys {
-        let ss = key.decapsulate(ct);
-        let file_key = aead_decrypt(&ss.to_bytes(), 16, &stanza.body);
+        let ss = key.decapsulate(&ct).unwrap();
+        let file_key = aead_decrypt(&ss, FILE_KEY_BYTES, &stanza.body);
 
         if let Ok(file_key) = file_key {
-            let file_key: [u8; 16] = file_key.try_into().expect("This should never fail");
-            return Some(FileKey::from(file_key));
+            return Some(FileKey::new(Box::new(file_key.try_into().ok()?)));
         }
     }
 
@@ -163,43 +221,14 @@ fn main() -> io::Result<()> {
 
     if let Some(state_machine) = opts.age_plugin {
         // The plugin was started by an age client; run the state machine.
-        run_state_machine(
-            &state_machine,
-            Some(|| RecipientPlugin::default()),
-            Some(|| IdentityPlugin::default()),
-        )?;
+        run_state_machine(&state_machine, Handler)?;
         return Ok(());
     }
 
     // Here you can assume the binary is being run directly by a user,
     // and perform administrative tasks like generating keys.
-    let (sk, pk) = xwing_kem::generate_keypair();
-    println!(
-        "# created: {}",
-        chrono::Local::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
-    );
-    println!(
-        "# public key: {}",
-        bech32::encode(
-            RECIPIENT_PREFIX,
-            pk.to_vec().to_base32(),
-            bech32::Variant::Bech32
-        )
-        .unwrap()
-        .to_lowercase()
-        .as_str()
-    );
-    println!(
-        "{}",
-        bech32::encode(
-            IDENTITY_PREFIX,
-            sk.to_vec().to_base32(),
-            bech32::Variant::Bech32
-        )
-        .unwrap()
-        .to_ascii_uppercase()
-        .as_str()
-    );
+    let (sk, pk) = x_wing::generate_key_pair_from_os_rng();
+    print_new_identity(PLUGIN_NAME, sk.as_bytes(), &pk.as_bytes());
 
     Ok(())
 }
