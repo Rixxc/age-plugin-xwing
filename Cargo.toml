@@ -1,11 +1,13 @@
 [package]
 name = "age-plugin-xwing"
-version = "0.1.0"
-edition = "2021"
-license-file = "LICENSE"
 description = "X-Wing plugin for age clients"
+version = "0.1.1"
+edition = "2021"
+license = "MIT"
 repository = "https://github.com/Rixxc/age-plugin-xwing"
 readme = "README.md"
+keywords = ["x-wing", "age", "cli", "cryptography", "encryption"]
+categories = ["command-line-utilities", "cryptography"]
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
