@@ -1,3 +1,5 @@
+#![forbid(unsafe_code)]
+
 use age_core::{
     format::{FileKey, Stanza, FILE_KEY_BYTES},
     primitives::{aead_decrypt, aead_encrypt},
