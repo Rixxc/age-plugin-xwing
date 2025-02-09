@@ -56,7 +56,7 @@ impl RecipientPlugin {
                 let wrapped_key = aead_encrypt(&ss, file_key.expose_secret());
                 Stanza {
                     tag: PLUGIN_NAME.to_string(),
-                    args: vec![BASE64_STANDARD.encode(ct.as_bytes())],
+                    args: vec![BASE64_STANDARD_NO_PAD.encode(ct.as_bytes())],
                     body: wrapped_key,
                 }
             })
@@ -166,9 +166,15 @@ impl IdentityPlugin {
                 }
             };
 
-            let ct = match BASE64_STANDARD.decode(arg) {
-                Ok(ct) => ct,
-                Err(_) => {
+            // age-plugin-xwing up to version 0.1.1 encoded its ciphertext using BASE64_STANDARD.
+            // We still want to be able to support decrypting those.
+            let ct = match (
+                BASE64_STANDARD_NO_PAD.decode(arg),
+                BASE64_STANDARD.decode(arg),
+            ) {
+                (Ok(ct), _) => ct,
+                (_, Ok(ct)) => ct,
+                _ => {
                     errors.push(identity::Error::Stanza {
                         file_index,
                         stanza_index,
